@@ -1,0 +1,67 @@
+# mailflare-org fork only: builds the web zip with the host bridge for friggoffice, which pins it in
+# apps.json. Upstream's workflows are removed on this branch so a tag push runs only this one.
+#
+#   git tag v0.14.1-frigg.1 && git push origin frigg v0.14.1-frigg.1
+#
+# The tag (without the leading v) is the version in the zip's name: deckcraft-web-0.14.1-frigg.1.zip.
+name: Frigg web build
+
+on:
+  push:
+    tags: ["v*-frigg.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: frigg-web-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  web:
+    name: Web (wasm)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+    steps:
+      # The same pinned actions and shared steps as upstream's web release job
+      # (storytold/craft-common-actions, .github/workflows/release.yml, job "web").
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: frigg-web
+      - uses: storytold/craft-common-actions/actions/install-trunk@main
+        with:
+          trunk-version: "0.21.14"
+      - name: Check out craft-i18n
+        uses: storytold/craft-common-actions/actions/checkout-craft-i18n@main
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "DECKCRAFT_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "DECKCRAFT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "deckcraft-web") | .version')-frigg.dev" >> "$GITHUB_ENV"
+          fi
+      - name: Build and zip
+        run: packaging/web/package.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deckcraft-web
+          path: dist/release/deckcraft-web-*.zip
+          if-no-files-found: error
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/release/deckcraft-web-*.zip \
+            --title "DeckCraft web $GITHUB_REF_NAME (host bridge)" \
+            --notes "Web build of the frigg branch: upstream DeckCraft plus the ?host=parent postMessage bridge, for friggoffice."
