@@ -24,6 +24,10 @@ pub fn start() {
             log::error!("missing <canvas id=\"{CANVAS_ID}\">");
             return;
         };
+        // `?host=parent`: a same-origin page framing DeckCraft opens presentations in it and stores
+        // what it saves (`host`). That page guards leaving it, so this one doesn't.
+        let bridge = if query_param("host").as_deref() == Some("parent") { crate::host::Bridge::new() } else { None };
+        let app_bridge = bridge.clone();
         let mut options = eframe::WebOptions::default();
         if query().contains("webgl")
             && let eframe::egui_wgpu::WgpuSetup::CreateNew(create) = &mut options.wgpu_options.wgpu_setup
@@ -44,9 +48,18 @@ pub fn start() {
                         return Ok(Box::new(presenter) as Box<dyn eframe::App>);
                     }
                     let inbox: Inbox = Inbox::default();
-                    let mut app = SlideApp::new(Session::new(), services(inbox.clone(), cc.egui_ctx.clone()));
+                    let mut services = services(inbox.clone(), cc.egui_ctx.clone());
+                    if let Some(bridge) = &app_bridge {
+                        bridge.connect(&mut services, cc.egui_ctx.clone());
+                    }
+                    let mut app = SlideApp::new(Session::new(), services);
                     let q = query();
-                    if !q.contains("blank") {
+                    if app_bridge.is_some() {
+                        // In host mode the parent sends the presentation to edit; no sample meanwhile.
+                        if let Some(author) = query_param("author") {
+                            crate::host::Bridge::set_author(&mut app, &author);
+                        }
+                    } else if !q.contains("blank") {
                         if let Err(e) = deckcraft_engine::sample::open_sample(&mut app.session) {
                             log::error!("sample deck: {e}");
                         }
@@ -56,10 +69,16 @@ pub fn start() {
                     if q.contains("show") {
                         app.start_show(0, false);
                     }
-                    Ok(Box::new(WebShell { app, inbox }))
+                    Ok(Box::new(WebShell { app, inbox, bridge: app_bridge.clone() }))
                 }),
             )
             .await;
+        if let Some(bridge) = &bridge {
+            match &result {
+                Ok(()) => bridge.post_ready(),
+                Err(e) => bridge.post_failed(&format!("{e:?}")),
+            }
+        }
         if let Some(el) = document.get_element_by_id(LOADING_ID) {
             match result {
                 Ok(()) => el.remove(),
@@ -73,17 +92,27 @@ fn query() -> String {
     web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default()
 }
 
+/// One decoded query-string value (`?author=Ada%20Lovelace` → `Ada Lovelace`).
+fn query_param(key: &str) -> Option<String> {
+    web_sys::UrlSearchParams::new_with_str(&query()).ok()?.get(key)
+}
+
 /// Wraps the app to read dropped files asynchronously (browsers can't read them synchronously)
 /// and feed them through the inbox.
 struct WebShell {
     app: SlideApp,
     inbox: Inbox,
+    /// The `?host=parent` bridge, when a same-origin page frames this one.
+    bridge: Option<crate::host::Bridge>,
 }
 
 impl eframe::App for WebShell {
     /// Delegate one eframe logic pass to the wrapped application.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.app.logic(ctx);
+        if let Some(bridge) = &self.bridge {
+            bridge.sync(&mut self.app);
+        }
         if self.app.show.is_none()
             && let Some(host) = self.app.services.presenter.as_mut()
         {

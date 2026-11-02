@@ -14,10 +14,14 @@
 //! - preferences are not persisted.
 //!
 //! URL query flags: `?webgl` forces the WebGL2 backend instead of WebGPU; `?blank` starts with an
-//! empty presentation instead of the sample deck; `?show` starts the slide show.
+//! empty presentation instead of the sample deck; `?show` starts the slide show; `?host=parent`
+//! (with `&author=`) hands opening and saving to a same-origin page that frames this one
+//! (`host::Bridge`).
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+#[cfg(target_arch = "wasm32")]
+mod host;
 #[cfg(target_arch = "wasm32")]
 mod presenter;
 #[cfg(target_arch = "wasm32")]
